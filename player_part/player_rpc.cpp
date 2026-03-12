@@ -129,7 +129,6 @@ void handle_bt_start_discovery(BluetoothA2DPSource* src, const RpcHeader* hdr) {
   bt_set_scan_state(1);
   if (src->is_connected()) {
     src->disconnect();
-    src->set_auto_reconnect(true);
   }
   commonOkResponse(hdr);
 }

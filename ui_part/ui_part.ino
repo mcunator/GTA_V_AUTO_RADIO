@@ -37,7 +37,6 @@ static lv_obj_t *screen_player;
 static lv_obj_t *screen_bt;
 /* Loading animation */
 static lv_obj_t *spinner;
-
 static lv_obj_t *no_sd_image;
 
 /* Player */
@@ -47,8 +46,6 @@ static lv_obj_t *label_status;
 
 /* BT */
 static lv_obj_t *bt_list;
-static lv_obj_t *bt_spinner;
-static lv_obj_t *removeAll;
 static int bt_selected_item = -1;
 static TimerHandle_t encTimer = 0;
 typedef enum {
@@ -195,16 +192,11 @@ static void create_bt_screen(void) {
   lv_obj_align(bt_list, LV_ALIGN_TOP_MID, 0, 30);
   lv_obj_set_size(bt_list, UI_w, UI_h - 60);
   lv_obj_center(bt_list);
-
-  bt_spinner = lv_spinner_create(screen_bt, 1000, 60);
-  lv_obj_set_size(bt_spinner, 80, 80);
-  lv_obj_center(bt_spinner);
-  lv_obj_add_flag(bt_spinner, LV_OBJ_FLAG_HIDDEN);
 }
 
 /* Appends the "Remove paired devices" button at the tail of bt_list. */
 static void ui_bt_add_remove_btn(void) {
-  removeAll = lv_btn_create(bt_list);
+  lv_obj_t * removeAll = lv_btn_create(bt_list);
   lv_obj_add_flag(removeAll, LV_OBJ_FLAG_CHECKABLE);
   lv_obj_set_width(removeAll, lv_pct(100));
 
@@ -246,18 +238,6 @@ void ui_add_bt_item(ScanItem_t item) {
   lvgl_port_unlock();
 }
 
-void ui_bt_scan_start_anim(void) {
-  lvgl_port_lock(-1);
-  lv_obj_clear_flag(bt_spinner, LV_OBJ_FLAG_HIDDEN);
-  lvgl_port_unlock();
-}
-
-void ui_bt_scan_stop_anim(void) {
-  lvgl_port_lock(-1);
-  lv_obj_add_flag(bt_spinner, LV_OBJ_FLAG_HIDDEN);
-  lvgl_port_unlock();
-}
-
 void ui_update_bt_list_selection() {
   int count = lv_obj_get_child_cnt(bt_list);
   for (int i = 0; i < count; i++) {
@@ -296,7 +276,6 @@ void ui_bt_list_end_update(int device_count) {
     bt_selected_item = total - 1;
   }
   ui_update_bt_list_selection();
-  lv_obj_add_flag(bt_spinner, LV_OBJ_FLAG_HIDDEN);
   lvgl_port_unlock();
 }
 
@@ -448,17 +427,17 @@ void loop() {
               if (bt_selected_item >= 0) {
                 lv_obj_t *child = lv_obj_get_child(bt_list, bt_selected_item);
                 if (child) {
-                  if (removeAll == child) {
+                  if (bt_selected_item == lv_obj_get_child_cnt(bt_list) - 1) {
                     rpc_delete_bonding();
                   } else if (child->user_data) {
                     rpc_save_bt_item((uint8_t *)((ScanItem_t *)child->user_data)->mac);
+                    rpc_bt_poll_stop();
+                    rpc_set_bt_end_scan();
+                    ui_bt_list_clear();
+                    ui_show_player();
                   }
                 }
               }
-              break;
-            case TAPx2_gesture:
-              ui_bt_scan_start_anim();
-              rpc_get_bt_scan_list();
               break;
             case LONG_gesture:
               rpc_bt_poll_stop();

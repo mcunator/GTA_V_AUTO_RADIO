@@ -177,7 +177,11 @@ bool ssid_callback(const char *ssid, esp_bd_addr_t address, int rssi) {
     }
   }
   if (!exist) {
-    strcpy(scanList[foundedDevices].name, ssid);
+    if(strlen(ssid) == 0) {
+      strcpy(scanList[foundedDevices].name, mac);
+    } else {
+      strcpy(scanList[foundedDevices].name, ssid);
+    }
     memcpy(scanList[foundedDevices].mac, address, 6);
     scanList[foundedDevices].rssi = rssi;
     foundedDevices++;
@@ -419,40 +423,32 @@ void pausePlayback() {
 static uint32_t lastFlip = 0;
 static uint8_t isScannable = 0;
 void connectFlip(void) {
-  if (scanIsActive) {
-    return;
-  }
-  if (connected) {
-    if(isScannable) {
-      
-    }
-    return;
-  }
-
   if (millis() - lastFlip > 10000) {
     lastFlip = millis();
-    if (isScannable) {
-      isScannable = 0;
+    if (!isScannable && !scanIsActive) {
+      isScannable = 1;
       Serial.println("Set scannable");
       a2dp->source()->set_auto_reconnect(false);
       a2dp->source()->cancel_discovery();
       a2dp->source()->set_connectable(true);
       a2dp->source()->set_discoverability(ESP_BT_GENERAL_DISCOVERABLE);
     } else {
-      isScannable = 1;
+      isScannable = 0;
       Serial.println("Set discovery");
       a2dp->source()->set_connectable(false);
       a2dp->source()->set_discoverability(ESP_BT_NON_DISCOVERABLE);
-      int dev_num = esp_bt_gap_get_bond_device_num();
-      if (dev_num != ESP_FAIL && dev_num > 0) {
-        a2dp->source()->set_auto_reconnect(true);
-        esp_bd_addr_t *dev_list = (esp_bd_addr_t *)malloc(dev_num * sizeof(esp_bd_addr_t));
-        if (dev_list) {
-          memset((uint8_t *)dev_list, 0, dev_num * sizeof(esp_bd_addr_t));
-          if (esp_bt_gap_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {
-            a2dp->source()->connect_to(dev_list[0]);
+      a2dp->source()->set_auto_reconnect(true);
+      if(!a2dp->source()->is_connected() && !scanIsActive) {
+        int dev_num = esp_bt_gap_get_bond_device_num();
+        if (dev_num != ESP_FAIL && dev_num > 0) {
+          esp_bd_addr_t *dev_list = (esp_bd_addr_t *)malloc(dev_num * sizeof(esp_bd_addr_t));
+          if (dev_list) {
+            memset((uint8_t *)dev_list, 0, dev_num * sizeof(esp_bd_addr_t));
+            if (esp_bt_gap_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {
+              a2dp->source()->connect_to(dev_list[0]);
+            }
+            free(dev_list);
           }
-          free(dev_list);
         }
       }
     }
