@@ -196,20 +196,33 @@ static void create_bt_screen(void) {
   lv_obj_set_size(bt_list, UI_w, UI_h - 60);
   lv_obj_center(bt_list);
 
-  removeAll = lv_btn_create(bt_list);
-  lv_obj_add_flag(removeAll, LV_OBJ_FLAG_CHECKABLE);
-  lv_obj_set_width(removeAll, lv_pct(100));
-  lv_obj_t *label = lv_label_create(removeAll);
-  lv_label_set_text(label, "Remove paired devices");
-  lv_obj_center(label);
-
   bt_spinner = lv_spinner_create(screen_bt, 1000, 60);
   lv_obj_set_size(bt_spinner, 80, 80);
   lv_obj_center(bt_spinner);
   lv_obj_add_flag(bt_spinner, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* Appends the "Remove paired devices" button at the tail of bt_list. */
+static void ui_bt_add_remove_btn(void) {
+  removeAll = lv_btn_create(bt_list);
+  lv_obj_add_flag(removeAll, LV_OBJ_FLAG_CHECKABLE);
+  lv_obj_set_width(removeAll, lv_pct(100));
+
+  lv_obj_set_style_bg_color(removeAll, lv_color_hex(0x5C1010), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(removeAll, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(removeAll, lv_color_hex(0xCC2222), LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_bg_opa(removeAll, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_border_color(removeAll, lv_color_hex(0xFF6666), LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_border_width(removeAll, 2, LV_PART_MAIN | LV_STATE_CHECKED);
+
+  lv_obj_t *label = lv_label_create(removeAll);
+  lv_label_set_text(label, "Remove paired devices");
+  lv_obj_set_style_text_color(label, lv_color_white(), LV_PART_MAIN);
+  lv_obj_center(label);
+}
+
 void ui_add_bt_item(ScanItem_t item) {
+  lvgl_port_lock(-1);
   lv_obj_t *btn = lv_list_add_btn(bt_list, NULL, item.name);
   ScanItem_t *data = (ScanItem_t *)lv_mem_alloc(sizeof(ScanItem_t));
   if (data) {
@@ -217,55 +230,104 @@ void ui_add_bt_item(ScanItem_t item) {
     btn->user_data = data;
   }
   lv_obj_add_flag(btn, LV_OBJ_FLAG_CHECKABLE);
-  //lv_obj_add_event_cb(btn,
-  //                    bt_item_event_cb,
-  //                    LV_EVENT_CLICKED,
-  //                     data);
 
-  //lv_obj_set_style_text_color(btn,
-  //                            lv_color_hex(0xFFFFFF),
-  //                            LV_PART_MAIN);
+  /* Normal state */
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x1E1E1E), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_color(btn, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-  // lv_obj_set_style_bg_color(btn,
-  //                           lv_color_hex(0x000000),
-  //                          LV_PART_MAIN);
-  ui_bt_scan_stop_anim();
+  /* Selected / checked state */
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A6B3A), LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_text_color(btn, lv_color_white(), LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0x44FF88), LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_border_width(btn, 2, LV_PART_MAIN | LV_STATE_CHECKED);
+  lvgl_port_unlock();
 }
 
 void ui_bt_scan_start_anim(void) {
+  lvgl_port_lock(-1);
   lv_obj_clear_flag(bt_spinner, LV_OBJ_FLAG_HIDDEN);
+  lvgl_port_unlock();
 }
 
 void ui_bt_scan_stop_anim(void) {
+  lvgl_port_lock(-1);
   lv_obj_add_flag(bt_spinner, LV_OBJ_FLAG_HIDDEN);
+  lvgl_port_unlock();
 }
 
 void ui_update_bt_list_selection() {
-  int child = lv_obj_get_child_cnt(bt_list);
-  for (int i = 0; i < child; i++) {
-    lv_obj_t *child = lv_obj_get_child(bt_list, i);
+  int count = lv_obj_get_child_cnt(bt_list);
+  for (int i = 0; i < count; i++) {
+    lv_obj_t *item = lv_obj_get_child(bt_list, i);
     if (i == bt_selected_item) {
-      lv_obj_add_state(child, LV_STATE_CHECKED);
+      lv_obj_add_state(item, LV_STATE_CHECKED);
     } else {
-      lv_obj_clear_state(child, LV_STATE_CHECKED);
+      lv_obj_clear_state(item, LV_STATE_CHECKED);
     }
   }
 }
 
+/* Called before filling list with fresh scan results.
+   Saves bt_selected_item, frees user_data, wipes the list. */
+void ui_bt_list_begin_update(void) {
+  lvgl_port_lock(-1);
+  uint32_t count = lv_obj_get_child_cnt(bt_list);
+  for (uint32_t i = 0; i < count; i++) {
+    lv_obj_t *child = lv_obj_get_child(bt_list, i);
+    if (child->user_data) {
+      lv_mem_free(child->user_data);
+      child->user_data = NULL;
+    }
+  }
+  lv_obj_clean(bt_list);
+  lvgl_port_unlock();
+}
+
+/* Called after all items have been added.
+   Appends removeAll at end, clamps selection, refreshes highlight. */
+void ui_bt_list_end_update(int device_count) {
+  lvgl_port_lock(-1);
+  ui_bt_add_remove_btn();
+  int total = device_count + 1;  // devices + removeAll
+  if (bt_selected_item >= total) {
+    bt_selected_item = total - 1;
+  }
+  ui_update_bt_list_selection();
+  lv_obj_add_flag(bt_spinner, LV_OBJ_FLAG_HIDDEN);
+  lvgl_port_unlock();
+}
+
+/* Full cleanup used when leaving the BT screen. */
 void ui_bt_list_clear(void) {
+  lvgl_port_lock(-1);
   uint32_t count = lv_obj_get_child_cnt(bt_list);
   for (uint32_t i = 0; i < count; i++) {
     lv_obj_t *child = lv_obj_get_child(bt_list, i);
     if (child->user_data) lv_mem_free(child->user_data);
   }
   lv_obj_clean(bt_list);
+  lvgl_port_unlock();
 }
 
 void ui_show_bt_list(void) {
+  lvgl_port_lock(-1);
+  /* Wipe any stale list content from a previous visit. */
+  uint32_t count = lv_obj_get_child_cnt(bt_list);
+  for (uint32_t i = 0; i < count; i++) {
+    lv_obj_t *child = lv_obj_get_child(bt_list, i);
+    if (child->user_data) lv_mem_free(child->user_data);
+  }
+  lv_obj_clean(bt_list);
+  ui_bt_add_remove_btn();  // removeAll is the only entry until scan results arrive
   bt_selected_item = -1;
+  ui_update_bt_list_selection();
+  lvgl_port_unlock();
+
   current_screen = UI_BT;
   load_screen(screen_bt);
-  ui_update_bt_list_selection();
 }
 
 
@@ -359,6 +421,7 @@ void loop() {
             case LONG_gesture:
               ui_show_bt_list();
               rpc_start_bt_scan();
+              rpc_bt_poll_start();
               break;
           }
           break;
@@ -366,24 +429,30 @@ void loop() {
         case UI_BT:
           switch (g) {
             case L_gesture:
-              if (bt_selected_item > -1) {
+              if (bt_selected_item > 0) {
                 bt_selected_item--;
               }
+              lvgl_port_lock(-1);
               ui_update_bt_list_selection();
+              lvgl_port_unlock();
               break;
             case R_gesture:
-              if (bt_selected_item < (int)lv_obj_get_child_cnt(lv_obj_get_parent(removeAll)) - 1) {
+              if (bt_selected_item < (int)lv_obj_get_child_cnt(bt_list) - 1) {
                 bt_selected_item++;
               }
+              lvgl_port_lock(-1);
               ui_update_bt_list_selection();
+              lvgl_port_unlock();
               break;
             case TAP_gesture:
-              {
+              if (bt_selected_item >= 0) {
                 lv_obj_t *child = lv_obj_get_child(bt_list, bt_selected_item);
-                if (removeAll == child) {
-                  rpc_delete_bonding();
-                } else {
-                  rpc_save_bt_item((uint8_t *)((ScanItem_t *)child->user_data)->mac);
+                if (child) {
+                  if (removeAll == child) {
+                    rpc_delete_bonding();
+                  } else if (child->user_data) {
+                    rpc_save_bt_item((uint8_t *)((ScanItem_t *)child->user_data)->mac);
+                  }
                 }
               }
               break;
@@ -392,6 +461,7 @@ void loop() {
               rpc_get_bt_scan_list();
               break;
             case LONG_gesture:
+              rpc_bt_poll_stop();
               rpc_set_bt_end_scan();
               ui_bt_list_clear();
               ui_show_player();

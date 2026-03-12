@@ -95,10 +95,12 @@ void handle_bt_get_scan(const RpcHeader* hdr, const uint8_t * payload) {
     int count = (hdr->length - sizeof(PacketType_e)) / sizeof(ScanItem_t);
     Serial.printf("Count %d\n", count);
     ScanItem_t *scan = &pckt->scan;
+    ui_bt_list_begin_update();
     for(int i = 0; i < count; i++) {
       ui_add_bt_item(scan[i]);
       Serial.printf("%d %s " MAC_STR " %d\n", i, scan[i].name, MAC_ARR(scan[i].mac), scan[i].rssi);
     }
+    ui_bt_list_end_update(count);
   }
 }
 void handle_bt_end_scan(const RpcHeader* hdr, const uint8_t * payload) {
@@ -119,6 +121,18 @@ void rpc_get_bt_scan_list(void) {
 }
 void rpc_set_bt_end_scan(void) {
   rpc_send(RPC_CMD, RPC_BT_END_SCAN, 0, 0, 0);
+}
+
+static bool bt_scan_polling = false;
+static uint32_t lastBtScanPollTime = 0;
+
+void rpc_bt_poll_start(void) {
+  bt_scan_polling = true;
+  lastBtScanPollTime = 0;  // triggers immediately on first rpc_task tick
+}
+
+void rpc_bt_poll_stop(void) {
+  bt_scan_polling = false;
 }
 
 void rpc_save_bt_item(uint8_t * mac) {
@@ -336,6 +350,11 @@ void rpc_task(void* arg) {
   if (changedFolderTime > 0 && changedFolderTime < millis()) {
     rpc_set_album_begin();
     changedFolderTime = 0;
+  }
+
+  if (bt_scan_polling && nowMs - lastBtScanPollTime >= 2000) {
+    lastBtScanPollTime = nowMs;
+    rpc_get_bt_scan_list();
   }
 }
 
