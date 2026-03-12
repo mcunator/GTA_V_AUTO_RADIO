@@ -10,6 +10,7 @@
 #include "esp_avrc_api.h"
 
 #include "player_rpc.h"
+#include "SPIFFS.h"
 
 AudioGeneratorWAV *waw;
 AudioFileSourceSD *file;
@@ -38,6 +39,7 @@ typedef struct {
 static Folder folders[MAX_FOLDERS] = { 0 };
 static uint64_t startPlayingTime = 0;
 static int64_t additionalTimeOffset = 0;
+static int64_t lastSavesTs = 0;
 
 QueueHandle_t mp3EventQueue;
 QueueHandle_t mp3CmdQueue;
@@ -357,6 +359,29 @@ void mp3Task(void *pvParameters) {
     vTaskDelay(1 / portTICK_PERIOD_MS);
   }
 }
+void readFile(fs::FS &fs, const char *path, int64_t * time) {
+  Serial.printf("Reading file: %s\n", path);
+  File file = fs.open(path);
+  if (!file) {
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+  file.readBytes((char *)time, sizeof(int64_t));
+  file.close();
+}
+
+void writeFile(fs::FS &fs, const char *path, int64_t time) {
+  File file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+  if (file.write((uint8_t *)&time, sizeof(time))) {
+  } else {
+    Serial.println("Write failed");
+  }
+  file.close();
+}
 
 void setup() {
   Serial.begin(921600);
@@ -377,6 +402,10 @@ void setup() {
     }
   }
 
+  if(SPIFFS.begin(true)){
+    readFile(SPIFFS, "/time.txt", &lastSavesTs);   
+    additionalTimeOffset = lastSavesTs;
+  }
   esp_err_t ret;
   ret = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
   Serial.printf("mem_release BLE: %s\n", esp_err_to_name(ret));
@@ -469,6 +498,13 @@ void connectFlip(void) {
 #define TRACK_STEP_TIME 120000
 void loop() {
   AudioEvent ev;
+  if(isPlaying) {
+    if(additionalTimeOffset + startPlayingTime - lastSavesTs > TRACK_STEP_TIME) {
+      lastSavesTs = (additionalTimeOffset + startPlayingTime) % (24*3600);
+      writeFile(SPIFFS, "/time.txt", lastSavesTs);
+    }
+  }
+
   while (xQueueReceive(mp3EventQueue, &ev, 0)) {
     switch (ev.type) {
       case EVT_TRACK_FINISHED:
