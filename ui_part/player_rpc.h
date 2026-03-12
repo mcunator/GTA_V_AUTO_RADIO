@@ -146,4 +146,9 @@ void rpc_set_bt_end_scan(void);
 
 void ui_change_image(const uint16_t *new_img);
 void ui_add_bt_item(ScanItem_t item);
+void ui_bt_list_begin_update(void);
+void ui_bt_list_end_update(int device_count);
+
+void rpc_bt_poll_start(void);
+void rpc_bt_poll_stop(void);
 #endif
