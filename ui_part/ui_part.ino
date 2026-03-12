@@ -318,7 +318,7 @@ void setup() {
   ui_init();
   lvgl_port_unlock();
 
-  encTimer = xTimerCreate("enc", 100, false, 0, sendTimerEvent);
+  encTimer = xTimerCreate("enc", 2, false, 0, sendTimerEvent);
 }
 
 
