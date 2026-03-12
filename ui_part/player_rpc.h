@@ -135,7 +135,7 @@ void rpc_set_new_folder(int8_t dir);
 void rpc_set_new_track(int8_t dir);
 
 void rpc_set_album_begin(void);
-void rpc_request_album_chunk(uint16_t offset, uint16_t len);
+void rpc_request_album_chunk(uint32_t offset, uint32_t len);
 void rpc_set_album_end(void);
 
 void rpc_start_bt_scan(void);

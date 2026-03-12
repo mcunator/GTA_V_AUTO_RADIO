@@ -70,9 +70,105 @@ void send_state_event() {
   rpc_send(RPC_EVENT, RPC_EVT_STATE_CHANGED,
            &g_state, sizeof(g_state));
 }
+
 #define SCHEDULE_GET_ALBUM 100
 static uint32_t changedFolderTime = 0;
+
+/* =========================
+   ALBUM ART FSM
+   ========================= */
+#define IMAGE_CHUNK_SIZE (RPC_MAX_PAYLOAD * 3 / 4)
+#define BITMAP_SIZE      (UI_w * UI_h / 8)
+#define ALBUM_XFER_TIMEOUT_MS 3000
+
+typedef enum {
+  ALBUM_IDLE = 0,
+  ALBUM_WAIT_HEADER_ACK,  // HEADER CMD sent, waiting for player ACK
+  ALBUM_TRANSFERRING,     // Receiving chunks
+} AlbumFsmState_e;
+
+static AlbumFsmState_e albumState  = ALBUM_IDLE;
+static uint32_t        albumTimeout = 0;
+static uint32_t        nextBytes    = 0;
+static uint8_t  album_compressed[BITMAP_SIZE] = {0};
+static uint16_t album_buffer[UI_w * UI_h]     = {0};
+
+void rpc_request_album_chunk(uint32_t offset, uint32_t len) {
+  Packet_t p = {.type = _imageChunk};
+  p.chunk.offset = offset;
+  p.chunk.size   = len;
+  rpc_send(RPC_CMD, RPC_GET_FOLDER_IMAGE_CHUNK, &p,
+           sizeof(ImageChunk_t) + sizeof(PacketType_e), 0);
+}
+
+void rpc_set_album_begin(void) {
+  albumState  = ALBUM_WAIT_HEADER_ACK;
+  nextBytes   = 0;
+  memset(album_compressed, 0, sizeof(album_compressed));
+  albumTimeout = millis() + ALBUM_XFER_TIMEOUT_MS;
+  rpc_send(RPC_CMD, RPC_GET_FOLDER_IMAGE_HEADER, 0, 0, 0);
+}
+
+void rpc_set_album_end(void) {
+  rpc_send(RPC_CMD, RPC_GET_FOLDER_IMAGE_END, 0, 0, 0);
+}
+
+/* Called when HEADER ACK arrives from player */
+static void rpc_album_on_header_ack(void) {
+  if (albumState != ALBUM_WAIT_HEADER_ACK) return;
+  albumState   = ALBUM_TRANSFERRING;
+  albumTimeout = millis() + ALBUM_XFER_TIMEOUT_MS;
+  rpc_request_album_chunk(0, IMAGE_CHUNK_SIZE);
+}
+
+static void rpc_render_album(void) {
+  int32_t p = 0;
+  for (int i = 0; i < BITMAP_SIZE; i++) {
+    for (int j = 0; j < 8; j++, p++) {
+      album_buffer[p] = (album_compressed[i] & (1 << j)) ? 0xFFFF : 0;
+    }
+  }
+  ui_change_image(album_buffer);
+}
+
+/* Called when CHUNK RESP arrives from player */
+static void rpc_album_on_chunk(const uint8_t* p, const RpcHeader* hdr) {
+  if (albumState != ALBUM_TRANSFERRING) return;
+
+  Packet_t* pckt = (Packet_t*)p;
+  if (pckt->type != _imageChunk) return;
+
+  /* Discard out-of-order responses (from an aborted transfer pipeline) */
+  if (pckt->chunk.offset != nextBytes) {
+    rpc_request_album_chunk(nextBytes, IMAGE_CHUNK_SIZE);
+    return;
+  }
+  if (pckt->chunk.offset + pckt->chunk.size > BITMAP_SIZE) return;
+
+  uint8_t* data = (uint8_t*)&p[sizeof(ImageChunk_t) + sizeof(PacketType_e)];
+  memcpy(album_compressed + pckt->chunk.offset, data, pckt->chunk.size);
+  nextBytes    = pckt->chunk.offset + pckt->chunk.size;
+  albumTimeout = millis() + ALBUM_XFER_TIMEOUT_MS;
+
+  if (nextBytes >= BITMAP_SIZE) {
+    rpc_render_album();
+    rpc_set_album_end();
+    albumState = ALBUM_IDLE;
+  } else {
+    rpc_request_album_chunk(nextBytes, IMAGE_CHUNK_SIZE);
+  }
+}
+
+static void album_fsm_tick(void) {
+  if (albumState != ALBUM_IDLE && (int32_t)(millis() - albumTimeout) > 0) {
+    Serial.printf("Album FSM timeout, state=%d\n", albumState);
+    albumState = ALBUM_IDLE;
+  }
+}
+
 void handle_set_folder(const RpcHeader* hdr, const uint8_t* payload) {
+  /* Abort any in-progress transfer so stale responses are discarded */
+  albumState       = ALBUM_IDLE;
   changedFolderTime = millis() + SCHEDULE_GET_ALBUM;
 }
 
@@ -130,72 +226,6 @@ void rpc_save_bt_item(uint8_t * mac) {
 void rpc_delete_bonding(void) {
   rpc_send(RPC_CMD, RPC_BT_CLEAR_PAIRED, 0, 0, 0);
 }
-/* =========================
-   ALBUM STREAMING (RAW RGB565)
-   ========================= */
-#define IMAGE_CHUNK_SIZE (RPC_MAX_PAYLOAD * 3 / 4)
-#define BITMAP_SIZE (UI_w * UI_h / 8)
-static uint32_t nextBytes = 0;
-static uint8_t album_compressed[BITMAP_SIZE] = { 0 };
-static uint16_t album_buffer[UI_w * UI_h] = { 0 };
-static uint16_t imageSeq = 0;
-void rpc_request_album_chunk(uint32_t offset, uint32_t len) {
-  Packet_t p = { .type = _imageChunk };
-  p.chunk.offset = offset;
-  p.chunk.size = len;
-  rpc_send(RPC_CMD, RPC_GET_FOLDER_IMAGE_CHUNK, &p, sizeof(ImageChunk_t) + sizeof(PacketType_e), 0);
-}
-
-void rpc_set_album_begin(void) {
-  memset(album_compressed, 0, sizeof(album_compressed));
-  rpc_send(RPC_CMD, RPC_GET_FOLDER_IMAGE_HEADER, 0, 0, 0);
-  imageSeq = g_seq;
-}
-
-void rpc_set_album_end(void) {
-  rpc_send(RPC_CMD, RPC_GET_FOLDER_IMAGE_END, 0, 0, 0);
-}
-
-static void rpc_album_begin(void) {
-  nextBytes = 0;
-  rpc_request_album_chunk(nextBytes, IMAGE_CHUNK_SIZE);
-}
-
-static void rpc_handle_state_event(const RpcHeader* hdr, const uint8_t* p) {
-}
-static void rpc_album_end(void) {
-  int32_t p = 0;
-  for (int i = 0; i < BITMAP_SIZE; i++) {
-    for (int j = 0; j < 8; j++, p++) {
-      album_buffer[p] = ((album_compressed[i] & (1 << j)) ? 0xFFFF : 0);
-    }
-  }
-
-  ui_change_image(album_buffer);
-  nextBytes = 0;
-}
-static void rpc_album_chunk(const uint8_t* p, const RpcHeader* hdr) {
-  Packet_t* pckt = (Packet_t*)p;
-  uint8_t* data = (uint8_t*)&p[sizeof(ImageChunk_t) + sizeof(PacketType_e)];
-  if (pckt->type != _imageChunk || imageSeq > hdr->seq) {
-    rpc_request_album_chunk(nextBytes, IMAGE_CHUNK_SIZE);
-    return;
-  }
-  if (pckt->chunk.offset + pckt->chunk.size > BITMAP_SIZE) {
-    rpc_set_album_end();
-    return;
-  }
-  memcpy(album_compressed + pckt->chunk.offset, data, pckt->chunk.size);
-  nextBytes = pckt->chunk.offset + pckt->chunk.size;
-
-  if (nextBytes == BITMAP_SIZE) {
-    rpc_set_album_end();
-  } else {
-    rpc_request_album_chunk(nextBytes, IMAGE_CHUNK_SIZE);
-  }
-  rpc_album_end();
-}
-
 
 /* ============================================================
    DISPATCH
@@ -205,6 +235,9 @@ static int pingPckt = 0;
 static int pongPckt = 0;
 bool rpc_intercom_is_active(void) {
   return pingPckt > 10 && abs(pingPckt - pongPckt) < 3;
+}
+
+static void rpc_handle_state_event(const RpcHeader* hdr, const uint8_t* p) {
 }
 
 void rpc_dispatch(const RpcHeader* hdr, const uint8_t* payload) {
@@ -217,19 +250,19 @@ void rpc_dispatch(const RpcHeader* hdr, const uint8_t* payload) {
   if (hdr->type == RPC_CMD)
     return;
   switch (hdr->opcode) {
-    case RPC_SET_FOLDER: handle_set_folder(hdr, payload); break;
-    case RPC_SET_TRACK: handle_set_track(hdr, payload); break;
-    case RPC_GET_FOLDER_IMAGE_HEADER: rpc_album_begin(); break;
-    case RPC_GET_FOLDER_IMAGE_CHUNK: rpc_album_chunk(payload, hdr); break;
-    case RPC_GET_FOLDER_IMAGE_END: rpc_album_end(); break;
+    case RPC_SET_FOLDER:              handle_set_folder(hdr, payload); break;
+    case RPC_SET_TRACK:               handle_set_track(hdr, payload); break;
+    case RPC_GET_FOLDER_IMAGE_HEADER: rpc_album_on_header_ack(); break;
+    case RPC_GET_FOLDER_IMAGE_CHUNK:  rpc_album_on_chunk(payload, hdr); break;
+    case RPC_GET_FOLDER_IMAGE_END:    /* player acked our END signal */ break;
 
     case RPC_EVT_STATE_CHANGED: rpc_handle_state_event(hdr, payload); break;
 
     case RPC_BT_START_DISCOVERY: handle_bt_start_discovery(hdr); break;
     case RPC_BT_SAVE_TO_CONNECT: handle_bt_connect(hdr); break;
-    case RPC_BT_CLEAR_PAIRED: handle_bt_clear_paired(hdr); break;
-    case RPC_BT_GET_SCAN_LIST: handle_bt_get_scan(hdr, payload); break;
-    case RPC_BT_END_SCAN: handle_bt_end_scan(hdr, payload); break;
+    case RPC_BT_CLEAR_PAIRED:    handle_bt_clear_paired(hdr); break;
+    case RPC_BT_GET_SCAN_LIST:   handle_bt_get_scan(hdr, payload); break;
+    case RPC_BT_END_SCAN:        handle_bt_end_scan(hdr, payload); break;
     default: break;
   }
 }
@@ -337,6 +370,8 @@ void rpc_task(void* arg) {
     rpc_set_album_begin();
     changedFolderTime = 0;
   }
+
+  album_fsm_tick();
 }
 
 /* ============================================================
