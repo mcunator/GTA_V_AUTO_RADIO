@@ -127,9 +127,14 @@ void handle_set_track(const RpcHeader* hdr, const uint8_t* payload) {
 
 void handle_bt_start_discovery(BluetoothA2DPSource* src, const RpcHeader* hdr) {
   bt_set_scan_state(1);
+  src->set_auto_reconnect(false);
   if (src->is_connected()) {
     src->disconnect();
   }
+  // cancel_discovery sets is_end=true so library won't auto-restart;
+  // then start a fresh inquiry so ssid_callback fires for nearby devices.
+  src->cancel_discovery();
+  esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
   commonOkResponse(hdr);
 }
 
@@ -188,8 +193,8 @@ void handle_bt_end_scan(BluetoothA2DPSource* src, const RpcHeader* hdr) {
       if (esp_bt_gap_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {
         src->connect_to(dev_list[0]);
       }
+      free(dev_list);
     }
-    free(dev_list);
   }
   commonOkResponse(hdr);
 }
