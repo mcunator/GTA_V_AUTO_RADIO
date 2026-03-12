@@ -98,11 +98,23 @@ Maximum folders: `MAX_FOLDERS = 20`. Folders with no `.wav` file are silently sk
 
 ### Album Art Streaming
 
-The UI requests album art via a chunked RPC flow:
-1. UI sends `RPC_GET_FOLDER_IMAGE_HEADER` → player ACKs.
-2. UI sends repeated `RPC_GET_FOLDER_IMAGE_CHUNK` with `{offset, size}` → player responds with raw bytes from the 1bpp buffer.
-3. Chunk size is `IMAGE_CHUNK_SIZE = RPC_MAX_PAYLOAD * 3 / 4 = 768` bytes.
-4. When `nextBytes == BITMAP_SIZE (7200)`, UI expands the 1bpp buffer to RGB565 (white=`0xFFFF`, black=`0x0000`) into `album_buffer[240*240]` and calls `ui_change_image()`.
+The UI requests album art via a chunked RPC flow driven by a 3-state FSM (`AlbumFsmState_e`):
+
+| State | Description |
+|---|---|
+| `ALBUM_IDLE` | No transfer in progress |
+| `ALBUM_WAIT_HEADER_ACK` | HEADER CMD sent, awaiting player ACK |
+| `ALBUM_TRANSFERRING` | Receiving 768-byte chunks |
+
+**Flow:**
+1. UI sends `RPC_GET_FOLDER_IMAGE_HEADER` → enters `ALBUM_WAIT_HEADER_ACK`.
+2. Player ACKs → UI enters `ALBUM_TRANSFERRING`, sends first `RPC_GET_FOLDER_IMAGE_CHUNK`.
+3. Player responds with raw bytes → UI copies data, requests next chunk.
+4. When `nextBytes == BITMAP_SIZE (7200)`, UI expands the 1bpp buffer to RGB565 (white=`0xFFFF`, black=`0x0000`) into `album_buffer[240*240]`, calls `ui_change_image()`, sends `RPC_GET_FOLDER_IMAGE_END`, returns to `ALBUM_IDLE`.
+
+**Fast-change safety:** On every `RPC_SET_FOLDER` response, `albumState` is reset to `ALBUM_IDLE` immediately, discarding any in-flight transfer. Out-of-order chunk responses (pipeline remnants) are detected by comparing `chunk.offset != nextBytes` and discarded. A 3-second inactivity timeout also resets the FSM in case of packet loss.
+
+Chunk size is `IMAGE_CHUNK_SIZE = RPC_MAX_PAYLOAD * 3 / 4 = 768` bytes.
 
 ### Audio Playback (player_part)
 
@@ -246,5 +258,5 @@ Cover art files (`.cover`) must be:
 - Serial debug output uses `Serial.printf()`; both boards share the same baud rate (`921600`).
 - The `connectFlip()` function in `player_part` has an incomplete branch (`if(isScannable) { }`) — this is intentional/WIP.
 - Some commented-out LVGL label code in `ui_part.ino` (status label) is left as scaffolding for future track-name display.
-- The `rpc_album_end()` call at the end of `rpc_album_chunk()` in `ui_part/player_rpc.cpp` is called unconditionally after every chunk — this may be a bug (it re-renders partial data). Do not "fix" this without understanding the full streaming flow.
+- Album art rendering (`rpc_render_album()`) is called exactly once per transfer, only when `nextBytes >= BITMAP_SIZE`. The old unconditional `rpc_album_end()` call that re-rendered partial data after every chunk has been removed.
 - BLE memory is freed on the player side (`esp_bt_controller_mem_release(ESP_BT_MODE_BLE)`) to give Classic BT more heap.
