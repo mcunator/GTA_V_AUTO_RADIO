@@ -218,6 +218,11 @@ bool ssid_callback(const char *ssid, esp_bd_addr_t address, int rssi) {
 void discovery_mode_callback(esp_bt_gap_discovery_state_t discoveryMode) {
   Serial.print("discoveryMode ");
   Serial.println(discoveryMode);
+  // The library sets is_end=true via cancel_discovery() so it won't auto-restart inquiry.
+  // When a user scan is active we need to keep rescanning until the UI stops it.
+  if (discoveryMode == ESP_BT_GAP_DISCOVERY_STOPPED && scanIsActive) {
+    esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
+  }
 }
 
 bool isMP3(String name) {
@@ -423,9 +428,12 @@ void pausePlayback() {
 static uint32_t lastFlip = 0;
 static uint8_t isScannable = 0;
 void connectFlip(void) {
+  if (scanIsActive) return;  // don't touch BT mode while user scan is in progress
+
   if (millis() - lastFlip > 10000) {
     lastFlip = millis();
-    if (!isScannable && !scanIsActive) {
+    if (!isScannable) {
+      // discovery mode → scannable: become visible for incoming pairing
       isScannable = 1;
       Serial.println("Set scannable");
       a2dp->source()->set_auto_reconnect(false);
@@ -433,12 +441,13 @@ void connectFlip(void) {
       a2dp->source()->set_connectable(true);
       a2dp->source()->set_discoverability(ESP_BT_GENERAL_DISCOVERABLE);
     } else {
+      // scannable mode → discovery: try to connect to known devices
       isScannable = 0;
       Serial.println("Set discovery");
       a2dp->source()->set_connectable(false);
       a2dp->source()->set_discoverability(ESP_BT_NON_DISCOVERABLE);
       a2dp->source()->set_auto_reconnect(true);
-      if(!a2dp->source()->is_connected() && !scanIsActive) {
+      if (!a2dp->source()->is_connected()) {
         int dev_num = esp_bt_gap_get_bond_device_num();
         if (dev_num != ESP_FAIL && dev_num > 0) {
           esp_bd_addr_t *dev_list = (esp_bd_addr_t *)malloc(dev_num * sizeof(esp_bd_addr_t));
@@ -449,6 +458,9 @@ void connectFlip(void) {
             }
             free(dev_list);
           }
+        } else {
+          // no bonded devices — start inquiry to discover any available device
+          esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
         }
       }
     }
