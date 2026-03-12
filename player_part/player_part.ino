@@ -36,10 +36,15 @@ typedef struct {
   Track track;
 } Folder;
 
+typedef struct {
+  int64_t time;
+  uint8_t folder;
+} SavedState_t;
+
 static Folder folders[MAX_FOLDERS] = { 0 };
 static uint64_t startPlayingTime = 0;
 static int64_t additionalTimeOffset = 0;
-static int64_t lastSavesTs = 0;
+static SavedState_t lastSaved = {0};
 
 QueueHandle_t mp3EventQueue;
 QueueHandle_t mp3CmdQueue;
@@ -179,7 +184,7 @@ bool ssid_callback(const char *ssid, esp_bd_addr_t address, int rssi) {
     }
   }
   if (!exist) {
-    if(strlen(ssid) == 0) {
+    if (strlen(ssid) == 0) {
       strcpy(scanList[foundedDevices].name, mac);
     } else {
       strcpy(scanList[foundedDevices].name, ssid);
@@ -353,30 +358,31 @@ void mp3Task(void *pvParameters) {
           isPlaying = false;
           sendTrackFinish();
         }
-        vTaskDelay(10 / portTICK_PERIOD_MS);  // небольшая пауза
+        vTaskDelay(100 / portTICK_PERIOD_MS);  // небольшая пауза
       }
     }
     vTaskDelay(1 / portTICK_PERIOD_MS);
   }
 }
-void readFile(fs::FS &fs, const char *path, int64_t * time) {
-  Serial.printf("Reading file: %s\n", path);
+void readFile(fs::FS &fs, const char *path, SavedState_t *s) {
   File file = fs.open(path);
   if (!file) {
     Serial.println("Failed to open file for reading");
     return;
   }
-  file.readBytes((char *)time, sizeof(int64_t));
+  if(file.readBytes((char *)s, sizeof(SavedState_t)) !=  sizeof(SavedState_t)) {
+    memset(s, 0, sizeof(SavedState_t));
+  }
   file.close();
 }
 
-void writeFile(fs::FS &fs, const char *path, int64_t time) {
+void writeFile(fs::FS &fs, const char *path, SavedState_t s) {
   File file = fs.open(path, FILE_WRITE);
   if (!file) {
     Serial.println("Failed to open file for writing");
     return;
   }
-  if (file.write((uint8_t *)&time, sizeof(time))) {
+  if (file.write((uint8_t *)&s, sizeof(s))) {
   } else {
     Serial.println("Write failed");
   }
@@ -402,9 +408,11 @@ void setup() {
     }
   }
 
-  if(SPIFFS.begin(true)){
-    readFile(SPIFFS, "/time.txt", &lastSavesTs);   
-    additionalTimeOffset = lastSavesTs;
+  if (SPIFFS.begin(true)) {
+    readFile(SPIFFS, "/time.txt", &lastSaved);
+    additionalTimeOffset = lastSaved.time;
+    currentFolder = lastSaved.folder < folderCount ? lastSaved.folder : 0;
+    Serial.printf("Saved Time: %d\n", additionalTimeOffset);
   }
   esp_err_t ret;
   ret = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
@@ -459,7 +467,7 @@ static uint8_t isScannable = 0;
 void connectFlip(void) {
   if (scanIsActive) return;  // don't touch BT mode while user scan is in progress
 
-  if (millis() - lastFlip > 10000) {
+  if (millis() - lastFlip > 10000 && !a2dp->source()->is_connected()) {
     lastFlip = millis();
     if (!isScannable) {
       // discovery mode → scannable: become visible for incoming pairing
@@ -476,21 +484,19 @@ void connectFlip(void) {
       a2dp->source()->set_connectable(false);
       a2dp->source()->set_discoverability(ESP_BT_NON_DISCOVERABLE);
       a2dp->source()->set_auto_reconnect(true);
-      if (!a2dp->source()->is_connected()) {
-        int dev_num = esp_bt_gap_get_bond_device_num();
-        if (dev_num != ESP_FAIL && dev_num > 0) {
-          esp_bd_addr_t *dev_list = (esp_bd_addr_t *)malloc(dev_num * sizeof(esp_bd_addr_t));
-          if (dev_list) {
-            memset((uint8_t *)dev_list, 0, dev_num * sizeof(esp_bd_addr_t));
-            if (esp_bt_gap_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {
-              a2dp->source()->connect_to(dev_list[0]);
-            }
-            free(dev_list);
+      int dev_num = esp_bt_gap_get_bond_device_num();
+      if (dev_num != ESP_FAIL && dev_num > 0) {
+        esp_bd_addr_t *dev_list = (esp_bd_addr_t *)malloc(dev_num * sizeof(esp_bd_addr_t));
+        if (dev_list) {
+          memset((uint8_t *)dev_list, 0, dev_num * sizeof(esp_bd_addr_t));
+          if (esp_bt_gap_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {
+            a2dp->source()->connect_to(dev_list[0]);
           }
-        } else {
-          // no bonded devices — start inquiry to discover any available device
-          esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
+          free(dev_list);
         }
+      } else {
+        // no bonded devices — start inquiry to discover any available device
+        esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
       }
     }
   }
@@ -498,10 +504,11 @@ void connectFlip(void) {
 #define TRACK_STEP_TIME 120000
 void loop() {
   AudioEvent ev;
-  if(isPlaying) {
-    if(additionalTimeOffset + startPlayingTime - lastSavesTs > TRACK_STEP_TIME) {
-      lastSavesTs = (additionalTimeOffset + startPlayingTime) % (24*3600);
-      writeFile(SPIFFS, "/time.txt", lastSavesTs);
+  if (isPlaying) {
+    if (additionalTimeOffset + startPlayingTime - lastSaved.time > TRACK_STEP_TIME) {
+      lastSaved.time = (additionalTimeOffset + startPlayingTime) % (24 * 3600000);
+      lastSaved.folder = currentFolder;
+      writeFile(SPIFFS, "/time.txt", lastSaved);
     }
   }
 
