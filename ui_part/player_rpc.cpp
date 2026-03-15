@@ -71,7 +71,7 @@ void send_state_event() {
            &g_state, sizeof(g_state));
 }
 
-#define SCHEDULE_GET_ALBUM 20
+#define SCHEDULE_GET_ALBUM 250
 static uint32_t changedFolderTime = 0;
 
 /* =========================

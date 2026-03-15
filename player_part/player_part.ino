@@ -37,13 +37,16 @@ typedef struct {
 } Folder;
 
 typedef struct {
-  int64_t time;
-  uint8_t folder;
+  uint32_t time;
+  uint32_t folder;
 } SavedState_t;
 
+#define TIME_STR    "%02d:%02d:%02d"
+#define TIME_FMT(t)     t / 3600, (t % 3600) / 60, t % 60
+
 static Folder folders[MAX_FOLDERS] = { 0 };
-static uint64_t startPlayingTime = 0;
-static int64_t additionalTimeOffset = 0;
+static uint32_t startPlayingTime = 0;
+static int32_t additionalTimeOffset = 0;
 static SavedState_t lastSaved = {0};
 
 QueueHandle_t mp3EventQueue;
@@ -128,9 +131,9 @@ void button_handler(uint8_t cmd, bool state) {
 
   xQueueSend(mp3EventQueue, &ev, 0);
 }
-
-uint64_t nowTimeMs() {
-  return esp_timer_get_time() / 1000;
+static uint32_t timeZero = 0;
+uint32_t nowTime() {
+  return millis() / 1000 + timeZero;
 }
 
 static char *bda2str(esp_bd_addr_t bda, char *str, size_t size) {
@@ -321,14 +324,12 @@ void mp3Task(void *pvParameters) {
                 }
                 file->open(t->path);
                 file->setBuffetSize(DEFAULT_BUFFESR_SIZE);
-                const uint32_t bytes_per_sec = 44100 * 16 * 2 / 8;
-                uint64_t elapsed_ms = nowTimeMs() - startPlayingTime - additionalTimeOffset;
+                const uint32_t bytes_per_sec = 176400;
+                uint32_t elapsed_s = nowTime() + additionalTimeOffset;
                 uint32_t duration_s = t->file_size / bytes_per_sec;
-                uint32_t duration_ms = duration_s * 1000;
-                uint32_t play_ms = elapsed_ms % duration_ms;
-
-                uint32_t offset = bytes_per_sec * (play_ms / 1000);
-                Serial.printf("Track path %s offset %d %d %d:%d:%d\n", t->path, offset, play_ms / 1000, duration_s / 3600, (duration_s % 3600) / 60, duration_s % 60);
+                uint32_t play_s = elapsed_s % duration_s;
+                uint32_t offset = bytes_per_sec * play_s;
+                Serial.printf("Track path %s offset %d " TIME_STR " " TIME_STR "\n", t->path, offset / 1024, TIME_FMT(play_s), TIME_FMT(duration_s));
 
                 waw->begin(file, a2dp);
                 file->seek(offset, SEEK_SET);
@@ -358,10 +359,10 @@ void mp3Task(void *pvParameters) {
           isPlaying = false;
           sendTrackFinish();
         }
-        vTaskDelay(100 / portTICK_PERIOD_MS);  // небольшая пауза
+        delay(100);  // небольшая пауза
       }
     }
-    vTaskDelay(1 / portTICK_PERIOD_MS);
+    delay(2);
   }
 }
 void readFile(fs::FS &fs, const char *path, SavedState_t *s) {
@@ -370,7 +371,7 @@ void readFile(fs::FS &fs, const char *path, SavedState_t *s) {
     Serial.println("Failed to open file for reading");
     return;
   }
-  if(file.readBytes((char *)s, sizeof(SavedState_t)) !=  sizeof(SavedState_t)) {
+  if(file.readBytes((char *)s, sizeof(SavedState_t)) != sizeof(SavedState_t)) {
     memset(s, 0, sizeof(SavedState_t));
   }
   file.close();
@@ -383,6 +384,7 @@ void writeFile(fs::FS &fs, const char *path, SavedState_t s) {
     return;
   }
   if (file.write((uint8_t *)&s, sizeof(s))) {
+     Serial.println("Success writing");
   } else {
     Serial.println("Write failed");
   }
@@ -410,9 +412,10 @@ void setup() {
 
   if (SPIFFS.begin(true)) {
     readFile(SPIFFS, "/time.txt", &lastSaved);
-    additionalTimeOffset = lastSaved.time;
+    lastSaved.time = lastSaved.time % (24*3600);
+    timeZero = lastSaved.time;
+    Serial.printf("Saved_time: " TIME_STR "\n", TIME_FMT(lastSaved.time));
     currentFolder = lastSaved.folder < folderCount ? lastSaved.folder : 0;
-    Serial.printf("Saved Time: %d\n", additionalTimeOffset);
   }
   esp_err_t ret;
   ret = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
@@ -501,22 +504,22 @@ void connectFlip(void) {
     }
   }
 }
-#define TRACK_STEP_TIME 120000
+#define TRACK_STEP_TIME 120
 void loop() {
   AudioEvent ev;
   if (isPlaying) {
-    if (additionalTimeOffset + startPlayingTime - lastSaved.time > TRACK_STEP_TIME) {
-      lastSaved.time = (additionalTimeOffset + startPlayingTime) % (24 * 3600000);
+    if (nowTime() + additionalTimeOffset - lastSaved.time > TRACK_STEP_TIME || lastSaved.folder != currentFolder) {
+      lastSaved.time = nowTime() + additionalTimeOffset;
       lastSaved.folder = currentFolder;
       writeFile(SPIFFS, "/time.txt", lastSaved);
     }
   }
 
-  while (xQueueReceive(mp3EventQueue, &ev, 0)) {
+  if(xQueueReceive(mp3EventQueue, &ev, 0) == pdPASS) {
     switch (ev.type) {
       case EVT_TRACK_FINISHED:
         if (startPlayingTime == 0) {
-          startPlayingTime = nowTimeMs();
+          startPlayingTime = nowTime();
         }
         Serial.printf("Track %d finished\n", ev.folder);
         playTrack(currentFolder);
@@ -529,14 +532,15 @@ void loop() {
         pausePlayback();
         break;
       case EVT_AVRCP_NEXT_TRACK:
+        additionalTimeOffset += TRACK_STEP_TIME;
+        playTrack(currentFolder);
+        break;
+
+      case EVT_AVRCP_PREV_TRACK:
         if (additionalTimeOffset - TRACK_STEP_TIME + startPlayingTime > 0) {
           additionalTimeOffset -= TRACK_STEP_TIME;
         }
-        playTrack(currentFolder);
-        break;
-      case EVT_AVRCP_PREV_TRACK:
-        additionalTimeOffset += TRACK_STEP_TIME;
-        playTrack(currentFolder);
+        playTrack(currentFolder);       
         break;
       case EVT_AVRCP_NEXT_FOLDER:
         playTrack((currentFolder + 1) % folderCount);
